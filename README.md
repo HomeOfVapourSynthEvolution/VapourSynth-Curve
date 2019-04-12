@@ -13,7 +13,7 @@ The filter allows you to redefine these two points and add some more. A new curv
 Usage
 =====
 
-    curve.Curve(clip clip[, int preset=0, string[] curve=['', '', ''], string master='', int[] planes=[0, 1, 2]])
+    curve.Curve(clip clip[, int preset=0, string[] curve=['', '', ''], string master='', string acv='', int[] planes=[0, 1, 2]])
 
 * clip: Clip to process. Any planar format with integer sample type of 8-16 bit depth is supported.
 
@@ -34,6 +34,8 @@ Usage
 
 * master: Sets the master key points. These points will define a second pass mapping. It is sometimes called a "luminance" or "value" mapping. It can be used with `curve` since it acts like a post-processing LUT.
 
+* acv: Specifies a Photoshop curves file (.acv) to import the settings from.
+
 * planes: Sets which planes will be processed. Any unprocessed planes will be simply copied.
 
 
@@ -43,4 +45,5 @@ Compilation
 ```
 meson build
 ninja -C build
+ninja -C build install
 ```

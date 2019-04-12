@@ -16,13 +16,27 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-#include <algorithm>
+#include <cerrno>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
+
+#include <algorithm>
 #include <memory>
 #include <string>
 
 #include <VapourSynth.h>
 #include <VSHelper.h>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 
 struct CurveData {
     VSNodeRef * node;
@@ -36,7 +50,7 @@ struct keypoint {
     std::shared_ptr<keypoint> next;
 };
 
-static inline void parsePoints(const char * s, std::shared_ptr<keypoint> & points, const int scale) {
+static void parsePoints(const char * s, std::shared_ptr<keypoint> & points, const int scale) {
     char * p = const_cast<char *>(s);
     std::shared_ptr<keypoint> last;
 
@@ -71,7 +85,7 @@ static inline void parsePoints(const char * s, std::shared_ptr<keypoint> & point
         throw std::string{ "only one point is defined, this is unlikely to behave as you expect" };
 }
 
-static inline int getNumberOfPoints(const keypoint * d) noexcept {
+static int getNumPoints(const keypoint * d) noexcept {
     int n = 0;
     while (d) {
         n++;
@@ -84,11 +98,11 @@ static inline int getNumberOfPoints(const keypoint * d) noexcept {
  * Natural cubic spline interpolation
  * Finding curves using Cubic Splines notes by Steven Rauch and John Stockie
  */
-static inline void interpolate(const keypoint * points, uint16_t * VS_RESTRICT y, const int lutSize, const int scale) {
+static void interpolate(const keypoint * points, uint16_t * VS_RESTRICT y, const int lutSize, const int scale) {
     const keypoint * point = points;
     double xPrev = 0.;
 
-    const int n = getNumberOfPoints(points); // number of splines
+    const int n = getNumPoints(points); // number of splines
 
     if (n == 0) {
         for (int i = 0; i < lutSize; i++)
@@ -238,7 +252,7 @@ static void VS_CC curveFree(void *instanceData, VSCore *core, const VSAPI *vsapi
 
 static void VS_CC curveCreate(const VSMap *in, VSMap *out, void *userData, VSCore *core, const VSAPI *vsapi) {
     std::unique_ptr<CurveData> d = std::make_unique<CurveData>();
-    int err;
+    int err = 0;
 
     d->node = vsapi->propGetNode(in, "clip", 0, nullptr);
     d->vi = vsapi->getVideoInfo(d->node);
@@ -251,7 +265,9 @@ static void VS_CC curveCreate(const VSMap *in, VSMap *out, void *userData, VSCor
 
         const int preset = int64ToIntS(vsapi->propGetInt(in, "preset", 0, &err));
 
-        const int numCurve = vsapi->propNumElements(in, "curve");
+        int numCurves = vsapi->propNumElements(in, "curve");
+
+        const char * acv = vsapi->propGetData(in, "acv", 0, &err);
 
         const int m = vsapi->propNumElements(in, "planes");
 
@@ -273,15 +289,99 @@ static void VS_CC curveCreate(const VSMap *in, VSMap *out, void *userData, VSCor
         if (preset < 0 || preset > 10)
             throw std::string{ "preset must be 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, or 10" };
 
-        if (numCurve > d->vi->format->numPlanes)
+        if (numCurves > d->vi->format->numPlanes)
             throw std::string{ "more curves given than there are planes" };
 
         const char * curve[4] = {};
 
-        for (int i = 0; i < numCurve; i++)
+        for (int i = 0; i < numCurves; i++)
             curve[i] = vsapi->propGetData(in, "curve", i, nullptr);
 
         curve[3] = vsapi->propGetData(in, "master", 0, &err);
+
+        std::unique_ptr<char[]> acvCurve[4];
+        if (acv) {
+            FILE * acvFile = nullptr;
+
+#ifdef _WIN32
+            const int requiredSize = MultiByteToWideChar(CP_UTF8, 0, acv, -1, nullptr, 0);
+            std::unique_ptr<wchar_t[]> wbuffer = std::make_unique<wchar_t[]>(requiredSize);
+            MultiByteToWideChar(CP_UTF8, 0, acv, -1, wbuffer.get(), requiredSize);
+            acvFile = _wfopen(wbuffer.get(), L"rb");
+#else
+            acvFile = std::fopen(acv, "rb");
+#endif
+            if (!acvFile)
+                throw std::string{ "error opening file " } + acv + " (" + std::strerror(errno) + ")";
+
+            if (std::fseek(acvFile, 0, SEEK_END)) {
+                std::fclose(acvFile);
+                throw std::string{ "error seeking to the end of file " } + acv + " (" + std::strerror(errno) + ")";
+            }
+
+            long size = std::ftell(acvFile);
+            if (size == -1) {
+                std::fclose(acvFile);
+                throw std::string{ "error determining the size of file " } + acv + " (" + std::strerror(errno) + ")";
+            }
+
+            std::rewind(acvFile);
+
+            std::unique_ptr<uint8_t[]> buffer = std::make_unique<uint8_t[]>(size);
+            uint8_t * buf = buffer.get();
+            if (std::fread(buf, 1, size, acvFile) != static_cast<size_t>(size)) {
+                std::fclose(acvFile);
+                throw std::string{ "error reading file " } + acv + " (" + std::strerror(errno) + ")";
+            }
+
+            std::fclose(acvFile);
+
+#define READ16(dst) do {                                                                                \
+    if (size < 2)                                                                                       \
+        throw std::string{ "invalid acv file" };                                                        \
+    dst = (reinterpret_cast<const uint8_t *>(buf)[0] << 8) | reinterpret_cast<const uint8_t *>(buf)[1]; \
+    buf += 2;                                                                                           \
+    size -= 2;                                                                                          \
+} while (0)
+
+#if defined(__GNUC__) || defined(__clang__)
+#define UNUSED __attribute__((unused))
+#else
+#define UNUSED
+#endif
+
+            constexpr int curveIndex[] = { 3, 0, 1, 2 };
+            int version UNUSED = 0;
+            numCurves = 0;
+            READ16(version);
+            READ16(numCurves);
+            for (int i = 0; i < std::min(numCurves, 4); i++) {
+                int numPoints = 0;
+                READ16(numPoints);
+                std::string str;
+
+                for (int n = 0; n < numPoints; n++) {
+                    int y = 0, x = 0;
+                    READ16(y);
+                    READ16(x);
+                    char tmp[64] = {};
+                    std::snprintf(tmp, 64, "%.20f/%.20f ", x / 255., y / 255.);
+                    str += std::string{ tmp };
+                }
+
+                if (!str.empty()) {
+                    const int j = curveIndex[i];
+                    if (!(curve[j] && *curve[j])) {
+                        acvCurve[j] = std::make_unique<char[]>(str.length() + 1);
+                        std::strcpy(acvCurve[j].get(), str.c_str());
+                        curve[j] = acvCurve[j].get();
+                    }
+                }
+            }
+
+#undef READ16
+#undef UNUSED
+        }
 
         if (preset == 1) {
             if (!(curve[0] && *curve[0]))
@@ -362,6 +462,7 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit(VSConfigPlugin configFunc, VSRegiste
                  "preset:int:opt;"
                  "curve:data[]:opt;"
                  "master:data:opt;"
+                 "acv:data:opt;"
                  "planes:int[]:opt;",
                  curveCreate, nullptr, plugin);
 }

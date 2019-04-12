@@ -1,7 +1,7 @@
 project('Curve', 'cpp',
   default_options : ['buildtype=release', 'b_ndebug=if-release', 'cpp_std=c++14'],
   meson_version : '>=0.48.0',
-  version : '1'
+  version : '2'
 )
 
 add_project_arguments('-ffast-math', language : 'cpp')
