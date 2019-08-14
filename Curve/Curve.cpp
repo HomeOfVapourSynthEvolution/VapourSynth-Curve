@@ -24,6 +24,7 @@
 #include <algorithm>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <VapourSynth.h>
 #include <VSHelper.h>
@@ -50,23 +51,16 @@ struct keypoint {
     std::shared_ptr<keypoint> next;
 };
 
-static void parsePoints(const char * s, std::shared_ptr<keypoint> & points, const int scale) {
-    char * p = const_cast<char *>(s);
+static void parsePoints(const std::vector<double> & p, std::shared_ptr<keypoint> & points, const int scale) {
     std::shared_ptr<keypoint> last;
 
-    // construct a linked list based on the key points string
-    while (p && *p) {
+    // construct a linked list based on the key points
+    for (size_t i = 0; i < p.size(); i += 2) {
         std::shared_ptr<keypoint> point = std::make_shared<keypoint>();
+        point->x = p[i + 0];
+        point->y = p[i + 1];
 
-        point->x = std::strtod(p, &p);
-        if (p && *p)
-            p++;
-
-        point->y = std::strtod(p, &p);
-        if (p && *p)
-            p++;
-
-        if (point->x < 0. || point->x > 1. || point->y < 0. || point->y > 1.)
+        if (point->x < 0.0 || point->x > 1.0 || point->y < 0.0 || point->y > 1.0)
             throw std::string{ "invalid key point coordinates, x and y must be in the [0;1] range" };
 
         if (!points)
@@ -100,7 +94,7 @@ static int getNumPoints(const keypoint * d) noexcept {
  */
 static void interpolate(const keypoint * points, uint16_t * VS_RESTRICT y, const int lutSize, const int scale) {
     const keypoint * point = points;
-    double xPrev = 0.;
+    double xPrev = 0.0;
 
     const int n = getNumPoints(points); // number of splines
 
@@ -110,7 +104,7 @@ static void interpolate(const keypoint * points, uint16_t * VS_RESTRICT y, const
         return;
     }
 
-    double (*matrix)[3] = reinterpret_cast<double (*)[3]>(calloc(n, sizeof(*matrix)));
+    double (*matrix)[3] = reinterpret_cast<double(*)[3]>(calloc(n, sizeof(*matrix)));
     double * h = reinterpret_cast<double *>(malloc((n - 1) * sizeof(*h)));
     double * r = reinterpret_cast<double *>(calloc(n, sizeof(*r)));
     if (!matrix || !h || !r)
@@ -150,7 +144,7 @@ static void interpolate(const keypoint * points, uint16_t * VS_RESTRICT y, const
     // tridiagonal solving of the linear system
     for (i = 1; i < n; i++) {
         const double den = matrix[i][MD] - matrix[i][BD] * matrix[i - 1][AD];
-        const double k = den ? 1. / den : 1.;
+        const double k = den ? 1.0 / den : 1.0;
         matrix[i][AD] *= k;
         r[i] = (r[i] - matrix[i][BD] * r[i - 1]) * k;
     }
@@ -170,9 +164,9 @@ static void interpolate(const keypoint * points, uint16_t * VS_RESTRICT y, const
         const double yn = point->next->y;
 
         const double a = yc;
-        const double b = (yn - yc) / h[i] - h[i] * r[i] / 2. - h[i] * (r[i + 1] - r[i]) / 6.;
-        const double c = r[i] / 2.;
-        const double d = (r[i + 1] - r[i]) / (6. * h[i]);
+        const double b = (yn - yc) / h[i] - h[i] * r[i] / 2.0 - h[i] * (r[i + 1] - r[i]) / 6.0;
+        const double c = r[i] / 2.0;
+        const double d = (r[i + 1] - r[i]) / (6.0 * h[i]);
 
         const int xStart = static_cast<int>(point->x * scale + 0.5);
         const int xEnd = static_cast<int>(point->next->x * scale + 0.5);
@@ -207,7 +201,7 @@ static void filter(const VSFrameRef * src, VSFrameRef * dst, const CurveData * c
 
             for (int y = 0; y < height; y++) {
                 for (int x = 0; x < width; x++)
-                    dstp[x] = d->graph[plane][srcp[x]];
+                    dstp[x] = static_cast<T>(d->graph[plane][srcp[x]]);
 
                 srcp += stride;
                 dstp += stride;
@@ -216,12 +210,12 @@ static void filter(const VSFrameRef * src, VSFrameRef * dst, const CurveData * c
     }
 }
 
-static void VS_CC curveInit(VSMap *in, VSMap *out, void **instanceData, VSNode *node, VSCore *core, const VSAPI *vsapi) {
+static void VS_CC curveInit(VSMap * in, VSMap * out, void ** instanceData, VSNode * node, VSCore * core, const VSAPI * vsapi) {
     CurveData * d = static_cast<CurveData *>(*instanceData);
     vsapi->setVideoInfo(d->vi, 1, node);
 }
 
-static const VSFrameRef *VS_CC curveGetFrame(int n, int activationReason, void **instanceData, void **frameData, VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi) {
+static const VSFrameRef * VS_CC curveGetFrame(int n, int activationReason, void ** instanceData, void ** frameData, VSFrameContext * frameCtx, VSCore * core, const VSAPI * vsapi) {
     const CurveData * d = static_cast<const CurveData *>(*instanceData);
 
     if (activationReason == arInitial) {
@@ -244,15 +238,15 @@ static const VSFrameRef *VS_CC curveGetFrame(int n, int activationReason, void *
     return nullptr;
 }
 
-static void VS_CC curveFree(void *instanceData, VSCore *core, const VSAPI *vsapi) {
+static void VS_CC curveFree(void * instanceData, VSCore * core, const VSAPI * vsapi) {
     CurveData * d = static_cast<CurveData *>(instanceData);
     vsapi->freeNode(d->node);
     delete d;
 }
 
-static void VS_CC curveCreate(const VSMap *in, VSMap *out, void *userData, VSCore *core, const VSAPI *vsapi) {
+static void VS_CC curveCreate(const VSMap * in, VSMap * out, void * userData, VSCore * core, const VSAPI * vsapi) {
     std::unique_ptr<CurveData> d = std::make_unique<CurveData>();
-    int err = 0;
+    int err;
 
     d->node = vsapi->propGetNode(in, "clip", 0, nullptr);
     d->vi = vsapi->getVideoInfo(d->node);
@@ -265,41 +259,66 @@ static void VS_CC curveCreate(const VSMap *in, VSMap *out, void *userData, VSCor
 
         const int preset = int64ToIntS(vsapi->propGetInt(in, "preset", 0, &err));
 
-        int numCurves = vsapi->propNumElements(in, "curve");
+        const double * r = vsapi->propGetFloatArray(in, "r", &err);
+        const int numR = vsapi->propNumElements(in, "r");
+
+        const double * g = vsapi->propGetFloatArray(in, "g", &err);
+        const int numG = vsapi->propNumElements(in, "g");
+
+        const double * b = vsapi->propGetFloatArray(in, "b", &err);
+        const int numB = vsapi->propNumElements(in, "b");
+
+        const double * master = vsapi->propGetFloatArray(in, "master", &err);
+        const int numMaster = vsapi->propNumElements(in, "master");
 
         const char * acv = vsapi->propGetData(in, "acv", 0, &err);
 
-        const int m = vsapi->propNumElements(in, "planes");
+        const int numPlanes = vsapi->propNumElements(in, "planes");
 
         for (int i = 0; i < 3; i++)
-            d->process[i] = (m <= 0);
+            d->process[i] = (numPlanes <= 0);
 
-        for (int i = 0; i < m; i++) {
-            const int n = int64ToIntS(vsapi->propGetInt(in, "planes", i, nullptr));
+        for (int i = 0; i < numPlanes; i++) {
+            const int plane = int64ToIntS(vsapi->propGetInt(in, "planes", i, nullptr));
 
-            if (n < 0 || n >= d->vi->format->numPlanes)
+            if (plane < 0 || plane >= d->vi->format->numPlanes)
                 throw std::string{ "plane index out of range" };
 
-            if (d->process[n])
+            if (d->process[plane])
                 throw std::string{ "plane specified twice" };
 
-            d->process[n] = true;
+            d->process[plane] = true;
         }
 
         if (preset < 0 || preset > 10)
             throw std::string{ "preset must be 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, or 10" };
 
-        if (numCurves > d->vi->format->numPlanes)
-            throw std::string{ "more curves given than there are planes" };
+        if (r && (numR & 1))
+            throw std::string{ "the number of elements in r must be a multiple of 2" };
 
-        const char * curve[4] = {};
+        if (g && (numG & 1))
+            throw std::string{ "the number of elements in g must be a multiple of 2" };
 
-        for (int i = 0; i < numCurves; i++)
-            curve[i] = vsapi->propGetData(in, "curve", i, nullptr);
+        if (b && (numB & 1))
+            throw std::string{ "the number of elements in b must be a multiple of 2" };
 
-        curve[3] = vsapi->propGetData(in, "master", 0, &err);
+        if (master && (numMaster & 1))
+            throw std::string{ "the number of elements in master must be a multiple of 2" };
 
-        std::unique_ptr<char[]> acvCurve[4];
+        std::vector<double> curve[4];
+
+        if (r)
+            curve[0].assign(r, r + numR);
+
+        if (g)
+            curve[1].assign(g, g + numG);
+
+        if (b)
+            curve[2].assign(b, b + numB);
+
+        if (master)
+            curve[3].assign(master, master + numMaster);
+
         if (acv) {
             FILE * acvFile = nullptr;
 
@@ -336,95 +355,89 @@ static void VS_CC curveCreate(const VSMap *in, VSMap *out, void *userData, VSCor
 
             std::fclose(acvFile);
 
-#define READ16(dst) do {                                                                                \
-    if (size < 2)                                                                                       \
-        throw std::string{ "invalid acv file" };                                                        \
-    dst = (reinterpret_cast<const uint8_t *>(buf)[0] << 8) | reinterpret_cast<const uint8_t *>(buf)[1]; \
-    buf += 2;                                                                                           \
-    size -= 2;                                                                                          \
-} while (0)
-
 #if defined(__GNUC__) || defined(__clang__)
 #define UNUSED __attribute__((unused))
 #else
 #define UNUSED
 #endif
 
+#define READ16(dst) do {                         \
+    if (size < 2)                                \
+        throw std::string{ "invalid acv file" }; \
+    dst = (buf[0] << 8) | buf[1];                \
+    buf += 2;                                    \
+    size -= 2;                                   \
+} while (0)
+
+            int version UNUSED = 0, numCurves = 0;
             constexpr int curveIndex[] = { 3, 0, 1, 2 };
-            int version UNUSED = 0;
-            numCurves = 0;
             READ16(version);
             READ16(numCurves);
+
             for (int i = 0; i < std::min(numCurves, 4); i++) {
                 int numPoints = 0;
                 READ16(numPoints);
-                std::string str;
+                std::vector<double> acvCurve;
+                const int j = curveIndex[i];
 
                 for (int n = 0; n < numPoints; n++) {
                     int y = 0, x = 0;
                     READ16(y);
                     READ16(x);
-                    char tmp[64] = {};
-                    std::snprintf(tmp, 64, "%.20f/%.20f ", x / 255., y / 255.);
-                    str += std::string{ tmp };
+                    acvCurve.push_back(x / 255.0);
+                    acvCurve.push_back(y / 255.0);
                 }
 
-                if (!str.empty()) {
-                    const int j = curveIndex[i];
-                    if (!(curve[j] && *curve[j])) {
-                        acvCurve[j] = std::make_unique<char[]>(str.length() + 1);
-                        std::strcpy(acvCurve[j].get(), str.c_str());
-                        curve[j] = acvCurve[j].get();
-                    }
-                }
+                if (curve[j].empty() && !acvCurve.empty())
+                    curve[j] = acvCurve;
             }
 
-#undef READ16
 #undef UNUSED
+#undef READ16
         }
 
         if (preset == 1) {
-            if (!(curve[0] && *curve[0]))
-                curve[0] = "0.129/1 0.466/0.498 0.725/0";
-            if (!(curve[1] && *curve[1]))
-                curve[1] = "0.109/1 0.301/0.498 0.517/0";
-            if (!(curve[2] && *curve[2]))
-                curve[2] = "0.098/1 0.235/0.498 0.423/0";
+            if (curve[0].empty())
+                curve[0] = { 0.129,1, 0.466,0.498, 0.725,0 };
+            if (curve[1].empty())
+                curve[1] = { 0.109,1, 0.301,0.498, 0.517,0 };
+            if (curve[2].empty())
+                curve[2] = { 0.098,1, 0.235,0.498, 0.423,0 };
         } else if (preset == 2) {
-            if (!(curve[0] && *curve[0]))
-                curve[0] = "0/0 0.25/0.156 0.501/0.501 0.686/0.745 1/1";
-            if (!(curve[1] && *curve[1]))
-                curve[1] = "0/0 0.25/0.188 0.38/0.501 0.745/0.815 1/0.815";
-            if (!(curve[2] && *curve[2]))
-                curve[2] = "0/0 0.231/0.094 0.709/0.874 1/1";
+            if (curve[0].empty())
+                curve[0] = { 0,0, 0.25,0.156, 0.501,0.501, 0.686,0.745, 1,1 };
+            if (curve[1].empty())
+                curve[1] = { 0,0, 0.25,0.188, 0.38,0.501, 0.745,0.815, 1,0.815 };
+            if (curve[2].empty())
+                curve[2] = { 0,0, 0.231,0.094, 0.709,0.874, 1,1 };
         } else if (preset == 3) {
-            if (!(curve[3] && *curve[3]))
-                curve[3] = "0/0 0.5/0.4 1/1";
+            if (curve[3].empty())
+                curve[3] = { 0,0, 0.5,0.4, 1,1 };
         } else if (preset == 4) {
-            if (!(curve[3] && *curve[3]))
-                curve[3] = "0/0 0.149/0.066 0.831/0.905 0.905/0.98 1/1";
+            if (curve[3].empty())
+                curve[3] = { 0,0, 0.149,0.066, 0.831,0.905, 0.905,0.98, 1,1 };
         } else if (preset == 5) {
-            if (!(curve[3] && *curve[3]))
-                curve[3] = "0/0 0.4/0.5 1/1";
+            if (curve[3].empty())
+                curve[3] = { 0,0, 0.4,0.5, 1,1 };
         } else if (preset == 6) {
-            if (!(curve[3] && *curve[3]))
-                curve[3] = "0/0 0.305/0.286 0.694/0.713 1/1";
+            if (curve[3].empty())
+                curve[3] = { 0,0, 0.305,0.286, 0.694,0.713, 1,1 };
         } else if (preset == 7) {
-            if (!(curve[3] && *curve[3]))
-                curve[3] = "0/0 0.286/0.219 0.639/0.643 1/1";
+            if (curve[3].empty())
+                curve[3] = { 0,0, 0.286,0.219, 0.639,0.643, 1,1 };
         } else if (preset == 8) {
-            if (!(curve[3] && *curve[3]))
-                curve[3] = "0/1 1/0";
+            if (curve[3].empty())
+                curve[3] = { 0,1, 1,0 };
         } else if (preset == 9) {
-            if (!(curve[3] && *curve[3]))
-                curve[3] = "0/0 0.301/0.196 0.592/0.6 0.686/0.737 1/1";
+            if (curve[3].empty())
+                curve[3] = { 0,0, 0.301,0.196, 0.592,0.6, 0.686,0.737, 1,1 };
         } else if (preset == 10) {
-            if (!(curve[0] && *curve[0]))
-                curve[0] = "0/0.11 0.42/0.51 1/0.95";
-            if (!(curve[1] && *curve[1]))
-                curve[1] = "0/0 0.50/0.48 1/1";
-            if (!(curve[2] && *curve[2]))
-                curve[2] = "0/0.22 0.49/0.44 1/0.8";
+            if (curve[0].empty())
+                curve[0] = { 0,0.11, 0.42,0.51, 1,0.95 };
+            if (curve[1].empty())
+                curve[1] = { 0,0, 0.5,0.48, 1,1 };
+            if (curve[2].empty())
+                curve[2] = { 0,0.22, 0.49,0.44, 1,0.8 };
         }
 
         const int lutSize = 1 << d->vi->format->bitsPerSample;
@@ -437,7 +450,7 @@ static void VS_CC curveCreate(const VSMap *in, VSMap *out, void *userData, VSCor
             interpolate(points[i].get(), d->graph[i].get(), lutSize, scale);
         }
 
-        if (curve[3]) {
+        if (!curve[3].empty()) {
             for (int i = 0; i < 3; i++) {
                 for (int j = 0; j < lutSize; j++)
                     d->graph[i][j] = d->graph[3][d->graph[i][j]];
@@ -455,13 +468,15 @@ static void VS_CC curveCreate(const VSMap *in, VSMap *out, void *userData, VSCor
 //////////////////////////////////////////
 // Init
 
-VS_EXTERNAL_API(void) VapourSynthPluginInit(VSConfigPlugin configFunc, VSRegisterFunction registerFunc, VSPlugin *plugin) {
+VS_EXTERNAL_API(void) VapourSynthPluginInit(VSConfigPlugin configFunc, VSRegisterFunction registerFunc, VSPlugin * plugin) {
     configFunc("com.holywu.curve", "curve", "Apply color adjustments using curves", VAPOURSYNTH_API_VERSION, 1, plugin);
     registerFunc("Curve",
                  "clip:clip;"
                  "preset:int:opt;"
-                 "curve:data[]:opt;"
-                 "master:data:opt;"
+                 "r:float[]:opt;"
+                 "g:float[]:opt;"
+                 "b:float[]:opt;"
+                 "master:float[]:opt;"
                  "acv:data:opt;"
                  "planes:int[]:opt;",
                  curveCreate, nullptr, plugin);
